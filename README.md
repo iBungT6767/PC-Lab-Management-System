@@ -34,3 +34,25 @@ This project was built to optimize CPU and network bandwidth usage through Dynam
 2. Install the required dependencies:
    ```bash
    pip install customtkinter flask flask-socketio mss pillow psutil pyautogui keyboard
+
+1. Run the dashboard:
+
+Bash
+python main_dashboard.py
+(Note: The system automatically resolves the LAN IP address and starts the WebSocket server on Port 5000).
+
+2. Student (Client) Setup
+Compile student_agent.py into an executable (.exe) using PyInstaller to hide the console window.
+
+Transfer the .exe to the student machine.
+
+Use Windows Task Scheduler to configure the application to run automatically at startup with Highest Privileges (Administrator).
+
+Ensure Windows Defender Firewall allows the application through both Private and Public networks.
+
+💡 Usage Highlights
+Broadcasting: Click the "Share" button on the Teacher dashboard to mirror the instructor's screen to all active student machines in 720p/1080p.
+
+OTA Updates: Click "อัปเดตโปรแกรมเด็ก (OTA)" on the sidebar, select the compiled .exe file, and the system will automatically distribute, replace, and restart the agent on all student machines.
+
+Export Logs: Click "ดึงรายงาน Logs" to generate a .csv file of all student connections and submissions.
