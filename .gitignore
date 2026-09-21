@@ -1,0 +1,8 @@
+__pycache__/
+build/
+dist/
+*.exe
+*.db
+*.spec
+PCLab_Teacher_Works/
+PCLab_Student_Works/
