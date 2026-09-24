@@ -419,10 +419,10 @@ def capture_and_send_screen():
         while True:
             try:
                 sct_img = sct.grab(monitor)
-                # 🛠️ ปรับเป็น 720p (1280x720) และลด Quality เหลือ 60 เพื่อให้ส่งข้อมูลได้เร็วและไม่ค้าง
+                # 🛠️ แก้จาก 1920, 1080 เป็น 1280, 720 
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX").resize((1280, 720)) 
                 buffer = io.BytesIO()
-                img.save(buffer, format="JPEG", quality=60)
+                img.save(buffer, format="JPEG", quality=80) 
                 
                 cpu_usage = psutil.cpu_percent(interval=None)
                 ram_usage = psutil.virtual_memory().percent

@@ -146,12 +146,14 @@ class PCLabMonitorApp(ctk.CTk):
         self.is_broadcasting = False 
         self.zoomed_pc = None 
         self.exhibit_pc = None 
+        self.sidebar_visible = True
         
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.create_sidebar()
         self.create_main_content()
         self.create_status_bar()
+        self.check_offline_status()
         
         threading.Thread(target=run_server, daemon=True).start()
         threading.Thread(target=start_udp_broadcast, daemon=True).start()
@@ -169,8 +171,10 @@ class PCLabMonitorApp(ctk.CTk):
         
         power_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         power_frame.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
-        ctk.CTkButton(power_frame, text="⚡ Power On", command=lambda: self.btn_action("wake"), fg_color="#27AE60", hover_color="#1E8449", width=110, font=FONT_BOLD).pack(side="left", padx=3)
+        ctk.CTkButton(power_frame, text="⚡ Power On All", command=lambda: self.btn_action("wake"), fg_color="#27AE60", hover_color="#1E8449", width=110, font=FONT_BOLD).pack(side="left", padx=3)
         ctk.CTkButton(power_frame, text="🔴 Shut All", command=lambda: self.btn_action("shutdown"), fg_color="#C0392B", hover_color="#922B21", width=110, font=FONT_BOLD).pack(side="right", padx=3)
+
+        ctk.CTkButton(self.sidebar, text="🔌 เลือกเปิดเครื่อง (WoL เฉพาะเครื่อง)", command=self.open_wake_specific_dialog, fg_color="#F1C40F", hover_color="#D4AC0D", text_color="black", font=FONT_BOLD).grid(row=3, column=0, padx=15, pady=(5,10), sticky="ew")
         
         action_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         action_frame.grid(row=3, column=0, padx=15, pady=5, sticky="ew")
@@ -293,9 +297,57 @@ class PCLabMonitorApp(ctk.CTk):
     def create_main_content(self):
         self.right_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        # นำ sub_toolbar ออกเพราะย้ายไปซ้ายมือหมดแล้ว ทำให้มีพื้นที่ดูจอเด็กเต็มที่!
+        
+        # แถบด้านบนสำหรับปุ่มพับ/กาง
+        self.top_bar = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.top_bar.pack(fill="x", pady=(0, 5))
+        ctk.CTkButton(self.top_bar, text="☰ ซ่อน/แสดง เมนู", width=100, font=FONT_BOLD, command=self.toggle_sidebar).pack(side="left")
+
         self.main_frame = ctk.CTkScrollableFrame(self.right_frame, corner_radius=15, fg_color=("gray95", "gray10"))
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=0)
+        self.main_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+    def toggle_sidebar(self):
+        if self.sidebar_visible:
+            self.sidebar.grid_remove()
+            self.sidebar_visible = False
+        else:
+            self.sidebar.grid()
+            self.sidebar_visible = True
+
+    def open_wake_specific_dialog(self):
+        conn = sqlite3.connect('pclab_monitor.db')
+        rows = conn.execute("SELECT pc_name, mac_address FROM pc_info").fetchall()
+        conn.close()
+
+        if not rows:
+            messagebox.showinfo("แจ้งเตือน", "ยังไม่มีข้อมูลเครื่องในฐานข้อมูล")
+            return
+
+        popup = ctk.CTkToplevel(self)
+        popup.title("🔌 เลือกเปิดคอมพิวเตอร์ (WoL)")
+        popup.geometry("350x450")
+        popup.attributes("-topmost", True)
+
+        ctk.CTkLabel(popup, text="เลือกเครื่องที่ต้องการปลุก:", font=FONT_TITLE).pack(pady=10)
+        scroll_frame = ctk.CTkScrollableFrame(popup)
+        scroll_frame.pack(fill="both", expand=True, padx=20, pady=5)
+
+        checkboxes = {}
+        for row in rows:
+            pc_name, mac = row[0], row[1]
+            var = ctk.BooleanVar(value=False)
+            chk = ctk.CTkCheckBox(scroll_frame, text=f"💻 {pc_name}", variable=var, font=FONT_MAIN)
+            chk.pack(anchor="w", pady=5, padx=10)
+            checkboxes[mac] = var
+
+        def wake_selected():
+            selected_macs = [mac for mac, var in checkboxes.items() if var.get()]
+            if not selected_macs: return
+            success_count = sum(1 for mac in selected_macs if send_magic_packet(mac))
+            self.status_lbl.configure(text=f"⚡ สั่งปลุกเฉพาะเครื่องสำเร็จ {success_count}/{len(selected_macs)} เครื่อง")
+            popup.destroy()
+
+        ctk.CTkButton(popup, text="⚡ ส่งคำสั่งปลุกเครื่องที่เลือก", command=wake_selected, font=FONT_BOLD).pack(pady=15)
 
     def create_status_bar(self):
         self.status_lbl = ctk.CTkLabel(self, text=f"🟢 Server IP: {get_lan_ip()} | Port: 5000 | PCs: 0", font=FONT_MAIN, anchor="w", bg_color=("gray85", "gray15"))
@@ -326,6 +378,9 @@ class PCLabMonitorApp(ctk.CTk):
         self.exhibit_pc = None
         socketio.emit('execute_command', {'action': 'stop_broadcast'})
         self.status_lbl.configure(text="🛑 หยุดการแชร์จอ Exhibit แล้ว")
+        # 🛠️ ข้อ 3: เมื่อกดยกเลิกฉายจอ ให้ปุ่มเมนูทุกเครื่องคืนค่าเป็น Monitor ทันที
+        for pc_data in clients_ui.values():
+            pc_data['cmd_menu'].set("👁️ ดูหน้าจอนี้ (Monitor)")
 
     # 🛠️ คำนวณแกน X, Y แม่นยำขึ้นเมื่อขยายเต็มจอ
     def handle_remote_click(self, event):
@@ -394,21 +449,23 @@ class PCLabMonitorApp(ctk.CTk):
         self.zoom_win.protocol("WM_DELETE_WINDOW", on_close)
 
     def handle_individual_command(self, pc_name, command_type):
-        if command_type == "⚡ สั่งการเครื่องนี้...": return
-        if command_type == "🔒 ล็อกเครื่องนี้": socketio.emit('execute_command', {'action': 'lock', 'target': pc_name})
+        # 🛠️ เมื่อกดสั่งงานเสร็จ ให้เมนูกลับไปแสดงคำว่า "ดูหน้าจอนี้ (Monitor)" อัตโนมัติ
+        clients_ui[pc_name]['cmd_menu'].set("👁️ ดูหน้าจอนี้ (Monitor)")
+        
+        if command_type == "👁️ ดูหน้าจอนี้ (Monitor)": self.open_zoom_window(pc_name)
+        elif command_type == "🔒 ล็อกเครื่องนี้": socketio.emit('execute_command', {'action': 'lock', 'target': pc_name})
         elif command_type == "🔓 ปลดล็อกเครื่องนี้": socketio.emit('execute_command', {'action': 'unlock', 'target': pc_name})
-        elif command_type == "👁️ แชร์จอนี้ (Exhibit)":
+        elif command_type == "📺 แชร์จอนี้ (Exhibit)":
             self.exhibit_pc = pc_name
             socketio.emit('execute_command', {'action': 'start_broadcast'})
         elif command_type == "💬 ส่งข้อความ": self.show_send_message_dialog(pc_name)
         elif command_type == "🔴 ปิดเครื่องนี้":
             if messagebox.askyesno("ยืนยัน", f"ต้องการปิดเครื่อง {pc_name}?"): socketio.emit('execute_command', {'action': 'shutdown', 'target': pc_name})
-
+        
     def update_pc_screen(self, pc_name, img_base64, cpu, ram, net_status):
         img_data = base64.b64decode(img_base64)
         img = Image.open(io.BytesIO(img_data))
         
-        # 🛠️ แก้ไข: แยกก๊อปปี้ภาพ (Copy) สำหรับจอเล็ก ป้องกันภาพตีกันกับจอซูม
         thumb_img = img.copy()
         ctk_image = ctk.CTkImage(light_image=thumb_img, dark_image=thumb_img, size=(220, 120))
         
@@ -420,36 +477,50 @@ class PCLabMonitorApp(ctk.CTk):
             title.pack(pady=(5, 0))
             screen_label = ctk.CTkLabel(pc_frame, image=ctk_image, text="", corner_radius=8, cursor="hand2")
             screen_label.pack(pady=5, padx=15)
-            hw_label = ctk.CTkLabel(pc_frame, text=f"⚙️ CPU: {cpu}% | 💾 RAM: {ram}%\n🌐 Net: {net_status}", font=("Segoe UI", 11), text_color="gray50")
+            hw_label = ctk.CTkLabel(pc_frame, text=f"⚙️ CPU: {cpu}% | 💾 RAM: {ram}%", font=("Segoe UI", 11), text_color="gray50")
             hw_label.pack(pady=(0, 2))
-            status_label = ctk.CTkLabel(pc_frame, text="👤 (เชื่อมต่อแล้ว)", text_color=("#27AE60", "#2ECC71"), font=FONT_BOLD)
+            
+            # 🛠️ สถานะสีเขียว (ออนไลน์)
+            status_label = ctk.CTkLabel(pc_frame, text="🟢 ออนไลน์ (Online)", text_color=("#27AE60", "#2ECC71"), font=FONT_BOLD)
             status_label.pack(pady=(0, 5))
             
-            menu_options = ["⚡ สั่งการเครื่องนี้...", "🔒 ล็อกเครื่องนี้", "🔓 ปลดล็อกเครื่องนี้", "👁️ แชร์จอนี้ (Exhibit)", "💬 ส่งข้อความ", "🔴 ปิดเครื่องนี้"]
+            # 🛠️ ข้อ 2: ให้ Monitor เป็นอันดับ 1
+            menu_options = ["👁️ ดูหน้าจอนี้ (Monitor)", "🔒 ล็อกเครื่องนี้", "🔓 ปลดล็อกเครื่องนี้", "📺 แชร์จอนี้ (Exhibit)", "💬 ส่งข้อความ", "🔴 ปิดเครื่องนี้"]
             cmd_menu = ctk.CTkOptionMenu(pc_frame, values=menu_options, width=180, height=28, font=("Segoe UI", 11), command=lambda val, p=pc_name: self.handle_individual_command(p, val))
             cmd_menu.pack(pady=(5, 10))
             screen_label.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc))
             title.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc))
             
-            clients_ui[pc_name] = {'frame': pc_frame, 'image_label': screen_label, 'status_label': status_label, 'hw_label': hw_label, 'img_ref': ctk_image}
+            # 🛠️ เก็บค่าเวลาล่าสุดที่อัปเดต (last_update) ไว้เช็คเน็ตหลุด
+            clients_ui[pc_name] = {'frame': pc_frame, 'image_label': screen_label, 'status_label': status_label, 'hw_label': hw_label, 'img_ref': ctk_image, 'cmd_menu': cmd_menu, 'last_update': time.time()}
             self.status_lbl.configure(text=f"🟢 Server IP: {get_lan_ip()} | Port: 5000 | PCs: {len(clients_ui)}")
         else:
+            # 🛠️ ถ้าเครื่องส่งภาพมาได้ แปลว่าออนไลน์ เปลี่ยนกลับเป็นสีเขียว และรีเซ็ตเวลา
+            clients_ui[pc_name]['last_update'] = time.time()
+            if "ออนไลน์" not in clients_ui[pc_name]['status_label'].cget("text"):
+                clients_ui[pc_name]['status_label'].configure(text="🟢 ออนไลน์ (Online)", text_color=("#27AE60", "#2ECC71"))
+            
             clients_ui[pc_name]['img_ref'] = ctk_image 
             clients_ui[pc_name]['image_label'].configure(image=ctk_image, text="")
-            clients_ui[pc_name]['hw_label'].configure(text=f"⚙️ CPU: {cpu}% | 💾 RAM: {ram}%\n🌐 Net: {net_status}")
+            clients_ui[pc_name]['hw_label'].configure(text=f"⚙️ CPU: {cpu}% | 💾 RAM: {ram}%")
 
-        # 🛠️ ใช้ ImageTk.PhotoImage ธรรมดาบังคับยืดรูปให้พอดีกรอบ 100%
         if self.zoomed_pc == pc_name and hasattr(self, 'zoom_label') and self.zoom_label.winfo_exists():
             win_w = self.zoom_label.winfo_width()
             win_h = self.zoom_label.winfo_height()
-            
             if win_w < 100: win_w = 800
             if win_h < 100: win_h = 450
-            
             zoom_img = img.copy().resize((win_w, win_h), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(zoom_img)
             self.zoom_label.configure(image=photo, text="")
             self.zoom_label.image_ref = photo
+
+    def check_offline_status(self):
+        current_time = time.time()
+        for pc_name, data in clients_ui.items():
+            # ถ้าหายไปเกิน 5 วินาที ให้ขึ้นสถานะแดง (Offline)
+            if current_time - data['last_update'] > 5:
+                data['status_label'].configure(text="🔴 ขาดการเชื่อมต่อ (Offline)", text_color=("#C0392B", "#E74C3C"))
+        self.after(3000, self.check_offline_status)
 
     def update_pc_registration(self, pc_name, name, student_id):
         if pc_name in clients_ui: clients_ui[pc_name]['status_label'].configure(text=f"👤 {name} ({student_id})", text_color=("#2980B9", "#3498DB"))
@@ -465,10 +536,10 @@ class PCLabMonitorApp(ctk.CTk):
             while self.is_broadcasting:
                 try:
                     sct_img = sct.grab(monitor)
-                    # 🛠️ ปรับเป็น 720p เช่นเดียวกัน
+                    # 🛠️ แก้จาก 1920, 1080 เป็น 1280, 720
                     img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX").resize((1280, 720))
                     buffer = io.BytesIO()
-                    img.save(buffer, format="JPEG", quality=60)
+                    img.save(buffer, format="JPEG", quality=80)
                     socketio.emit('broadcast_frame', {'image_data': base64.b64encode(buffer.getvalue()).decode('utf-8')})
                     time.sleep(0.1) 
                 except: pass
