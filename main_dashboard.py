@@ -55,9 +55,20 @@ def start_udp_broadcast():
     server_ip = get_lan_ip()
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    
+    # 🛠️ บังคับให้ส่งสัญญาณออกจาก IP ของเครื่องอาจารย์เท่านั้น (ป้องกันการส่งออกการ์ดจำลอง)
+    try:
+        udp_sock.bind((server_ip, 0))
+    except: pass
+    
+    # 🛠️ เพิ่มเป้าหมายให้ยิงเข้า Subnet ของห้อง Lab โดยตรง (172.28.29.255)
+    destinations = ['255.255.255.255', '172.28.29.255']
+    
     while True:
-        try: udp_sock.sendto(f"PCLAB_SERVER_IP:{server_ip}".encode('utf-8'), ('255.255.255.255', 5001))
-        except: pass
+        for dest in destinations:
+            try: 
+                udp_sock.sendto(f"PCLAB_SERVER_IP:{server_ip}".encode('utf-8'), (dest, 5001))
+            except: pass
         time.sleep(2)
 
 def send_magic_packet(mac_address):
@@ -117,10 +128,24 @@ def handle_submit_work(data):
         pc_name = data['pc_name']
         filename = data['filename']
         file_data = data['file_data']
+        
+        # 🛠️ ดึงชื่อนักศึกษาจากสถานะของการ์ด UI มาต่อท้ายชื่อไฟล์
+        student_info = ""
+        if pc_name in clients_ui:
+            status_text = clients_ui[pc_name]['status_label'].cget("text")
+            if "👤" in status_text:
+                import re
+                clean_name = status_text.replace("👤 ", "")
+                clean_name = re.sub(r'[\\/*?:"<>|]', "", clean_name) # ลบอักขระห้ามตั้งชื่อไฟล์
+                student_info = f"_[{clean_name}]"
+                
         save_folder = r"C:\PCLab_Teacher_Works"
         os.makedirs(save_folder, exist_ok=True)
-        save_path = os.path.join(save_folder, f"[{pc_name}]_{filename}")
+        
+        # 🛠️ รูปแบบไฟล์: [PC-01]_[ชื่อ (รหัส)]_ชื่องาน.docx
+        save_path = os.path.join(save_folder, f"[{pc_name}]{student_info}_{filename}")
         with open(save_path, 'wb') as f: f.write(base64.b64decode(file_data))
+        
         log_activity(f"Submitted Work: {filename}", pc_name)
         if app_instance: app_instance.after(0, lambda: app_instance.notify_new_work(pc_name, filename, save_folder))
     except Exception as e: print(e)
@@ -154,6 +179,7 @@ class PCLabMonitorApp(ctk.CTk):
         self.create_main_content()
         self.create_status_bar()
         self.check_offline_status()
+        self.after(1000, self.load_offline_pcs)
         
         threading.Thread(target=run_server, daemon=True).start()
         threading.Thread(target=start_udp_broadcast, daemon=True).start()
@@ -161,7 +187,7 @@ class PCLabMonitorApp(ctk.CTk):
     def create_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=280, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
-        self.sidebar.grid_rowconfigure(8, weight=1) 
+        self.sidebar.grid_rowconfigure(9, weight=1) 
         
         self.logo_label = ctk.CTkLabel(self.sidebar, text="🖥️ LAB 7203", font=("Segoe UI", 20, "bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(25, 20))
@@ -173,49 +199,53 @@ class PCLabMonitorApp(ctk.CTk):
         power_frame.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
         ctk.CTkButton(power_frame, text="⚡ Power On All", command=lambda: self.btn_action("wake"), fg_color="#27AE60", hover_color="#1E8449", width=110, font=FONT_BOLD).pack(side="left", padx=3)
         ctk.CTkButton(power_frame, text="🔴 Shut All", command=lambda: self.btn_action("shutdown"), fg_color="#C0392B", hover_color="#922B21", width=110, font=FONT_BOLD).pack(side="right", padx=3)
-
-        ctk.CTkButton(self.sidebar, text="🔌 เลือกเปิดเครื่อง (WoL เฉพาะเครื่อง)", command=self.open_wake_specific_dialog, fg_color="#F1C40F", hover_color="#D4AC0D", text_color="black", font=FONT_BOLD).grid(row=3, column=0, padx=15, pady=(5,10), sticky="ew")
         
         action_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        action_frame.grid(row=3, column=0, padx=15, pady=5, sticky="ew")
+        action_frame.grid(row=4, column=0, padx=15, pady=5, sticky="ew") 
         ctk.CTkButton(action_frame, text="🔒 Lock All", command=lambda: self.btn_action("lock"), fg_color="#E74C3C", hover_color="#C0392B", width=72, font=FONT_BOLD).pack(side="left", padx=2)
         ctk.CTkButton(action_frame, text="🔓 Unlock", command=lambda: self.btn_action("unlock"), fg_color="#2ECC71", hover_color="#27AE60", width=72, font=FONT_BOLD).pack(side="left", padx=2)
         self.share_btn = ctk.CTkButton(action_frame, text="🖥️ Share", command=lambda: self.btn_action("show"), fg_color="#3498DB", hover_color="#2980B9", width=95, font=FONT_BOLD)
         self.share_btn.pack(side="left", padx=2)
 
-        # 🛠️ ย้ายปุ่มจัดการชั้นเรียนทั้งหมดมาไว้ด้านซ้าย เรียงแนวตั้ง
         self.class_lbl = ctk.CTkLabel(self.sidebar, text="CLASS MANAGEMENT", font=FONT_BOLD, text_color="gray")
-        self.class_lbl.grid(row=4, column=0, padx=20, pady=(15, 5), sticky="w")
+        self.class_lbl.grid(row=5, column=0, padx=20, pady=(15, 5), sticky="w") 
         
         class_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        class_frame.grid(row=5, column=0, padx=15, pady=0, sticky="ew")
+        class_frame.grid(row=6, column=0, padx=15, pady=0, sticky="ew") 
         ctk.CTkButton(class_frame, text="📝 เปิดลงทะเบียน", command=lambda: self.btn_action("register"), fg_color="#E67E22", hover_color="#D56F14", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
         ctk.CTkButton(class_frame, text="💬 ประกาศแจ้งเตือน", command=lambda: self.btn_action("notify"), fg_color="#8E44AD", hover_color="#71368A", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
         ctk.CTkButton(class_frame, text="📤 ส่งไฟล์งาน", command=lambda: self.btn_action("send_all"), fg_color="#9B59B6", hover_color="#8E44AD", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
         ctk.CTkButton(class_frame, text="📄 ดึงรายงาน Logs", command=self.export_logs, fg_color="#F39C12", hover_color="#D68910", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
         ctk.CTkButton(class_frame, text="🛑 ยกเลิกฉายจอเพื่อน", command=self.stop_exhibit, fg_color="#C0392B", hover_color="#922B21", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
+        ctk.CTkButton(class_frame, text="🔄 อัปเดตโปรแกรมเด็ก (OTA)", command=self.update_student_agents, fg_color="#1ABC9C", hover_color="#16A085", font=FONT_BOLD).pack(fill="x", pady=3, padx=5)
 
         self.web_lbl = ctk.CTkLabel(self.sidebar, text="FILTERING (WEB & APP)", font=FONT_BOLD, text_color="gray")
-        self.web_lbl.grid(row=6, column=0, padx=20, pady=(15, 5), sticky="w")
+        self.web_lbl.grid(row=7, column=0, padx=20, pady=(15, 5), sticky="w") 
         
         self.web_frame = ctk.CTkFrame(self.sidebar, corner_radius=10)
-        self.web_frame.grid(row=7, column=0, padx=15, pady=5, sticky="nwe")
-        ctk.CTkButton(self.web_frame, text="⚙️ เลือกแอป/เว็บที่จะบล็อก", command=self.open_filter_popup, fg_color="#E67E22", hover_color="#D35400", font=FONT_BOLD, height=35).pack(pady=(15, 5), padx=10, fill="x")
+        self.web_frame.grid(row=8, column=0, padx=15, pady=5, sticky="nwe")
+        
+        # 🛠️ ส่งเป้าหมาย 'all' ไปที่ open_filter_popup
+        ctk.CTkButton(self.web_frame, text="⚙️ เลือกแอป/เว็บที่จะบล็อก", command=lambda: self.open_filter_popup('all'), fg_color="#E67E22", hover_color="#D35400", font=FONT_BOLD, height=35).pack(pady=(15, 5), padx=10, fill="x")
         ctk.CTkButton(self.web_frame, text="✅ ปลดบล็อกทั้งหมด", command=self.disable_blocks, fg_color="#34495E", hover_color="#2C3E50", font=FONT_BOLD, height=35).pack(pady=(5, 15), padx=10, fill="x")
 
         self.theme_btn = ctk.CTkButton(self.sidebar, text="☀️ Light Mode", command=self.toggle_theme, fg_color="gray25", hover_color="gray35", font=FONT_BOLD)
-        self.theme_btn.grid(row=8, column=0, padx=20, pady=20, sticky="s")
+        self.theme_btn.grid(row=9, column=0, padx=20, pady=20, sticky="s") 
 
-    def open_filter_popup(self):
+    # 🛠️ อัปเดตฟังก์ชันนี้ให้รองรับ target (เพื่อใช้กับรายเครื่องและทั้งหมด)
+    def open_filter_popup(self, target='all'):
         popup = ctk.CTkToplevel(self)
-        popup.title("⚙️ ตั้งค่าการจำกัดสิทธิ์ (Filter Rules)")
+        
+        # 🛠️ เปลี่ยนชื่อหน้าต่างให้รู้ว่ากำลังบล็อกใคร
+        title_text = "⚙️ ตั้งค่าจำกัดสิทธิ์ (ทุกเครื่อง)" if target == 'all' else f"⚙️ ตั้งค่าจำกัดสิทธิ์: {target}"
+        popup.title(title_text)
+        
         popup.geometry("450x550")
         popup.attributes("-topmost", True)
         popup.resizable(False, False)
         ctk.CTkLabel(popup, text="เลือกเว็บไซต์และโปรแกรมที่ต้องการบล็อก", font=FONT_TITLE).pack(pady=(20, 10))
         
         sites_to_block = {
-            # 🛠️ เพิ่มโดเมนย่อยของ YouTube ทั้งหมด
             "YouTube (ดูวิดีโอ)": ["youtube.com", "youtu.be", "m.youtube.com", "googlevideo.com", "ytimg.com"],
             "Facebook (โซเชียล)": ["facebook.com", "messenger.com"],
             "Instagram (โซเชียล)": ["instagram.com"],
@@ -253,11 +283,18 @@ class PCLabMonitorApp(ctk.CTk):
         def apply_selected():
             sites = [s for name, (var, doms) in self.site_checkboxes.items() if var.get() for s in doms]
             apps = [a for name, (var, procs) in self.app_checkboxes.items() if var.get() for a in procs]
-            if sites: socketio.emit('execute_command', {'action': 'block_web', 'sites': sites})
-            if apps: socketio.emit('execute_command', {'action': 'block_app', 'apps': apps})
-            self.status_lbl.configure(text=f"🚫 สั่งบล็อกแล้ว: เว็บ {len(set(sites))} | โปรแกรม {len(set(apps))}")
+            
+            if sites: socketio.emit('execute_command', {'action': 'block_web', 'sites': sites, 'target': target})
+            if apps: socketio.emit('execute_command', {'action': 'block_app', 'apps': apps, 'target': target})
+            
+            target_name = "ทุกเครื่อง" if target == 'all' else target
+            
+            # 🛠️ เพิ่มบรรทัดนี้ เพื่อบันทึกว่าอาจารย์สั่งบล็อกอะไรไปบ้าง
+            log_activity(f"Apply Filters (Web: {len(sites)}, App: {len(apps)})", target_name)
+            
+            self.status_lbl.configure(text=f"🚫 สั่งบล็อก {target_name} แล้ว: เว็บ {len(set(sites))} | โปรแกรม {len(set(apps))}")
             popup.destroy()
-            messagebox.showinfo("สำเร็จ", "ส่งคำสั่งบล็อกไปยังเครื่องนักศึกษาเรียบร้อยแล้ว!")
+            messagebox.showinfo("สำเร็จ", f"ส่งคำสั่งบล็อกไปยัง {target_name} เรียบร้อยแล้ว!")
 
         ctk.CTkButton(popup, text="🚀 ยืนยันการบล็อก", command=apply_selected, fg_color="#E67E22", hover_color="#D35400", font=FONT_BOLD, height=40).pack(pady=15)
 
@@ -298,7 +335,6 @@ class PCLabMonitorApp(ctk.CTk):
         self.right_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         
-        # แถบด้านบนสำหรับปุ่มพับ/กาง
         self.top_bar = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.top_bar.pack(fill="x", pady=(0, 5))
         ctk.CTkButton(self.top_bar, text="☰ ซ่อน/แสดง เมนู", width=100, font=FONT_BOLD, command=self.toggle_sidebar).pack(side="left")
@@ -375,17 +411,20 @@ class PCLabMonitorApp(ctk.CTk):
         messagebox.showinfo("ได้รับงานใหม่", f"นักศึกษา {pc_name} ส่งไฟล์: {filename}")
 
     def stop_exhibit(self):
+        if hasattr(self, 'exhibit_pc') and self.exhibit_pc:
+            socketio.emit('execute_command', {'action': 'set_low_fps', 'target': self.exhibit_pc})
+            
+        self.is_broadcasting = False
+        self.share_btn.configure(fg_color="#3498DB", hover_color="#2980B9", text="🖥️ Share")
+        
         self.exhibit_pc = None
         socketio.emit('execute_command', {'action': 'stop_broadcast'})
-        self.status_lbl.configure(text="🛑 หยุดการแชร์จอ Exhibit แล้ว")
-        # 🛠️ ข้อ 3: เมื่อกดยกเลิกฉายจอ ให้ปุ่มเมนูทุกเครื่องคืนค่าเป็น Monitor ทันที
+        self.status_lbl.configure(text="🛑 หยุดการแชร์จอแล้ว")
         for pc_data in clients_ui.values():
             pc_data['cmd_menu'].set("👁️ ดูหน้าจอนี้ (Monitor)")
 
-    # 🛠️ คำนวณแกน X, Y แม่นยำขึ้นเมื่อขยายเต็มจอ
     def handle_remote_click(self, event):
         if not hasattr(self, 'zoom_win') or not self.zoom_win.winfo_exists(): return
-        # ดึงขนาดความกว้าง/ยาวของหน้าต่างปัจจุบัน เพื่อให้เมาส์ตรงจุดแม้จะขยายจอ
         w = self.zoom_win.winfo_width()
         h = self.zoom_win.winfo_height()
         if w < 100: w = 800
@@ -400,7 +439,6 @@ class PCLabMonitorApp(ctk.CTk):
     def toggle_fullscreen(self, event=None):
         self.zoom_win.attributes("-fullscreen", not self.zoom_win.attributes("-fullscreen"))
 
-    # 🛠️ 1. เพิ่มรับค่า button_type สำหรับคลิกขวา
     def handle_remote_click(self, event, button_type="left"):
         if not hasattr(self, 'zoom_win') or not self.zoom_win.winfo_exists(): return
         w = self.zoom_label.winfo_width()
@@ -411,7 +449,6 @@ class PCLabMonitorApp(ctk.CTk):
         ry = event.y / h
         socketio.emit('remote_input', {'target': self.zoomed_pc, 'type': 'click', 'button': button_type, 'x': rx, 'y': ry})
         
-    # 🛠️ 2. แยกระหว่างการกดปุ่มพิเศษ (Enter, ลบ) กับการพิมพ์ตัวอักษร (ภาษาไทย/อังกฤษ)
     def handle_remote_key(self, event):
         special_keys = ['Return', 'BackSpace', 'Escape', 'Tab', 'space', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'Caps_Lock']
         if event.keysym in special_keys or not event.char:
@@ -419,11 +456,16 @@ class PCLabMonitorApp(ctk.CTk):
         else:
             socketio.emit('remote_input', {'target': self.zoomed_pc, 'type': 'char', 'char': event.char})
 
-    def open_zoom_window(self, pc_name):
+    def open_zoom_window(self, pc_name, mode="view"):
         if hasattr(self, 'zoom_win') and self.zoom_win.winfo_exists(): self.zoom_win.destroy()
         self.zoomed_pc = pc_name
         self.zoom_win = ctk.CTkToplevel(self)
-        self.zoom_win.title(f"ส่องและควบคุมหน้าจอ: {pc_name} [Remote Control]")
+        
+        if mode == "control":
+            self.zoom_win.title(f"ส่องและควบคุมหน้าจอ: {pc_name} [โหมดควบคุม (Remote Control)]")
+        else:
+            self.zoom_win.title(f"ส่องหน้าจอ: {pc_name} [โหมดดูอย่างเดียว (View Only)]")
+            
         self.zoom_win.geometry("800x450") 
         self.zoom_win.resizable(True, True) 
         
@@ -435,10 +477,11 @@ class PCLabMonitorApp(ctk.CTk):
         self.zoom_label = tk.Label(self.zoom_win, text="กำลังเปิดกล้องรับภาพ...", font=("Segoe UI", 16, "bold"), bg="black", fg="white")
         self.zoom_label.pack(expand=True, fill="both")
         
-        # 🛠️ 3. เพิ่มการดักจับเมาส์คลิกขวา (<Button-3>)
-        self.zoom_label.bind("<Button-1>", lambda e: self.handle_remote_click(e, "left"))
-        self.zoom_label.bind("<Button-3>", lambda e: self.handle_remote_click(e, "right"))
-        self.zoom_win.bind("<Key>", self.handle_remote_key)
+        if mode == "control":
+            self.zoom_label.bind("<Button-1>", lambda e: self.handle_remote_click(e, "left"))
+            self.zoom_label.bind("<Button-3>", lambda e: self.handle_remote_click(e, "right"))
+            self.zoom_win.bind("<Key>", self.handle_remote_key)
+            
         self.zoom_win.focus_set() 
         
         socketio.emit('execute_command', {'action': 'set_high_fps', 'target': pc_name})
@@ -449,20 +492,66 @@ class PCLabMonitorApp(ctk.CTk):
         self.zoom_win.protocol("WM_DELETE_WINDOW", on_close)
 
     def handle_individual_command(self, pc_name, command_type):
-        # 🛠️ เมื่อกดสั่งงานเสร็จ ให้เมนูกลับไปแสดงคำว่า "ดูหน้าจอนี้ (Monitor)" อัตโนมัติ
         clients_ui[pc_name]['cmd_menu'].set("👁️ ดูหน้าจอนี้ (Monitor)")
         
-        if command_type == "👁️ ดูหน้าจอนี้ (Monitor)": self.open_zoom_window(pc_name)
+        # 🛠️️ เพิ่มบรรทัดนี้ เพื่อบันทึกทุกคำสั่งที่อาจารย์กดเลือกจากเมนูรายเครื่อง
+        log_activity(f"Command: {command_type}", pc_name) 
+        
+        if command_type == "👁️ ดูหน้าจอนี้ (Monitor)": 
+            self.open_zoom_window(pc_name, mode="view")
+        # ... (โค้ดเดิมด้านล่างปล่อยไว้เหมือนเดิม) ...
+        elif command_type == "🎮 ควบคุมเครื่องนี้ (Control)": 
+            self.open_zoom_window(pc_name, mode="control")
+            
+        elif command_type == "⚡ เปิดเครื่องนี้ (WoL)":
+            conn = sqlite3.connect('pclab_monitor.db')
+            row = conn.execute("SELECT mac_address FROM pc_info WHERE pc_name=?", (pc_name,)).fetchone()
+            conn.close()
+            if row and send_magic_packet(row[0]):
+                messagebox.showinfo("สำเร็จ", f"ส่งคำสั่งปลุกเครื่อง {pc_name} เรียบร้อยแล้ว!")
+            else:
+                messagebox.showerror("ผิดพลาด", "ไม่สามารถส่งคำสั่งได้ หรือยังไม่มีประวัติ MAC Address ในฐานข้อมูล")
+                
         elif command_type == "🔒 ล็อกเครื่องนี้": socketio.emit('execute_command', {'action': 'lock', 'target': pc_name})
         elif command_type == "🔓 ปลดล็อกเครื่องนี้": socketio.emit('execute_command', {'action': 'unlock', 'target': pc_name})
+        
         elif command_type == "📺 แชร์จอนี้ (Exhibit)":
+            if hasattr(self, 'exhibit_pc') and self.exhibit_pc and self.exhibit_pc != pc_name:
+                socketio.emit('execute_command', {'action': 'set_low_fps', 'target': self.exhibit_pc})
+                
+            self.is_broadcasting = False 
+            self.share_btn.configure(fg_color="#3498DB", hover_color="#2980B9", text="🖥️ Share")
+            
             self.exhibit_pc = pc_name
+            socketio.emit('execute_command', {'action': 'set_high_fps', 'target': pc_name})
+            
             socketio.emit('execute_command', {'action': 'start_broadcast'})
+            
+            if pc_name in clients_ui and 'latest_raw_base64' in clients_ui[pc_name]:
+                socketio.emit('broadcast_frame', {'image_data': clients_ui[pc_name]['latest_raw_base64']})
+                
         elif command_type == "💬 ส่งข้อความ": self.show_send_message_dialog(pc_name)
+        
+        elif command_type == "🚫 บล็อกเว็บ/แอปเครื่องนี้":
+            self.open_filter_popup(target=pc_name)
+            
+        elif command_type == "✅ ปลดบล็อกเครื่องนี้":
+            socketio.emit('execute_command', {'action': 'unblock_web', 'target': pc_name})
+            socketio.emit('execute_command', {'action': 'unblock_app', 'target': pc_name})
+            self.status_lbl.configure(text=f"✅ ปลดบล็อกเครื่อง {pc_name} แล้ว")
+            messagebox.showinfo("สำเร็จ", f"ปลดบล็อกเครื่อง {pc_name} เรียบร้อยแล้ว")
+            
         elif command_type == "🔴 ปิดเครื่องนี้":
             if messagebox.askyesno("ยืนยัน", f"ต้องการปิดเครื่อง {pc_name}?"): socketio.emit('execute_command', {'action': 'shutdown', 'target': pc_name})
         
     def update_pc_screen(self, pc_name, img_base64, cpu, ram, net_status):
+        # 🛠️ ระบบหยุดพักเบื้องหลัง: ถ้าอาจารย์กำลังขยายหน้าจอเครื่องไหนอยู่ ให้หยุดประมวลผลภาพเครื่องอื่นๆ ทันทีเพื่อประหยัด CPU 90%
+        if self.zoomed_pc and self.zoomed_pc != pc_name:
+            if pc_name in clients_ui:
+                clients_ui[pc_name]['last_update'] = time.time()
+                clients_ui[pc_name]['latest_raw_base64'] = img_base64
+            return
+
         img_data = base64.b64decode(img_base64)
         img = Image.open(io.BytesIO(img_data))
         
@@ -480,23 +569,37 @@ class PCLabMonitorApp(ctk.CTk):
             hw_label = ctk.CTkLabel(pc_frame, text=f"⚙️ CPU: {cpu}% | 💾 RAM: {ram}%", font=("Segoe UI", 11), text_color="gray50")
             hw_label.pack(pady=(0, 2))
             
-            # 🛠️ สถานะสีเขียว (ออนไลน์)
             status_label = ctk.CTkLabel(pc_frame, text="🟢 ออนไลน์ (Online)", text_color=("#27AE60", "#2ECC71"), font=FONT_BOLD)
             status_label.pack(pady=(0, 5))
             
-            # 🛠️ ข้อ 2: ให้ Monitor เป็นอันดับ 1
-            menu_options = ["👁️ ดูหน้าจอนี้ (Monitor)", "🔒 ล็อกเครื่องนี้", "🔓 ปลดล็อกเครื่องนี้", "📺 แชร์จอนี้ (Exhibit)", "💬 ส่งข้อความ", "🔴 ปิดเครื่องนี้"]
+            menu_options = [
+                "👁️ ดูหน้าจอนี้ (Monitor)", 
+                "🎮 ควบคุมเครื่องนี้ (Control)", 
+                "⚡ เปิดเครื่องนี้ (WoL)", 
+                "🔒 ล็อกเครื่องนี้", 
+                "🔓 ปลดล็อกเครื่องนี้", 
+                "📺 แชร์จอนี้ (Exhibit)", 
+                "💬 ส่งข้อความ", 
+                "🚫 บล็อกเว็บ/แอปเครื่องนี้", 
+                "✅ ปลดบล็อกเครื่องนี้", 
+                "🔴 ปิดเครื่องนี้"
+            ]
             cmd_menu = ctk.CTkOptionMenu(pc_frame, values=menu_options, width=180, height=28, font=("Segoe UI", 11), command=lambda val, p=pc_name: self.handle_individual_command(p, val))
             cmd_menu.pack(pady=(5, 10))
-            screen_label.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc))
-            title.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc))
             
-            # 🛠️ เก็บค่าเวลาล่าสุดที่อัปเดต (last_update) ไว้เช็คเน็ตหลุด
-            clients_ui[pc_name] = {'frame': pc_frame, 'image_label': screen_label, 'status_label': status_label, 'hw_label': hw_label, 'img_ref': ctk_image, 'cmd_menu': cmd_menu, 'last_update': time.time()}
+            screen_label.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc, mode="view"))
+            title.bind("<Button-1>", lambda e, pc=pc_name: self.open_zoom_window(pc, mode="view"))
+            
+            clients_ui[pc_name] = {
+                'frame': pc_frame, 'title_label': title, 'image_label': screen_label, 
+                'status_label': status_label, 'hw_label': hw_label, 'img_ref': ctk_image, 
+                'cmd_menu': cmd_menu, 'last_update': time.time(), 'latest_raw_base64': img_base64
+            }
             self.status_lbl.configure(text=f"🟢 Server IP: {get_lan_ip()} | Port: 5000 | PCs: {len(clients_ui)}")
         else:
-            # 🛠️ ถ้าเครื่องส่งภาพมาได้ แปลว่าออนไลน์ เปลี่ยนกลับเป็นสีเขียว และรีเซ็ตเวลา
             clients_ui[pc_name]['last_update'] = time.time()
+            clients_ui[pc_name]['latest_raw_base64'] = img_base64 
+            
             if "ออนไลน์" not in clients_ui[pc_name]['status_label'].cget("text"):
                 clients_ui[pc_name]['status_label'].configure(text="🟢 ออนไลน์ (Online)", text_color=("#27AE60", "#2ECC71"))
             
@@ -509,21 +612,41 @@ class PCLabMonitorApp(ctk.CTk):
             win_h = self.zoom_label.winfo_height()
             if win_w < 100: win_w = 800
             if win_h < 100: win_h = 450
-            zoom_img = img.copy().resize((win_w, win_h), Image.Resampling.LANCZOS)
+            
+            # 🛠️ กลับมาใช้สูตร LANCZOS (คมชัดที่สุด) เพราะระบบพักจอเบื้องหลังช่วยกัน CPU ค้างไว้ให้แล้ว
+            try:
+                resample_alg = Image.Resampling.LANCZOS
+            except AttributeError:
+                resample_alg = Image.LANCZOS
+                
+            zoom_img = img.copy().resize((win_w, win_h), resample_alg)
             photo = ImageTk.PhotoImage(zoom_img)
             self.zoom_label.configure(image=photo, text="")
             self.zoom_label.image_ref = photo
 
-    def check_offline_status(self):
-        current_time = time.time()
-        for pc_name, data in clients_ui.items():
-            # ถ้าหายไปเกิน 5 วินาที ให้ขึ้นสถานะแดง (Offline)
-            if current_time - data['last_update'] > 5:
-                data['status_label'].configure(text="🔴 ขาดการเชื่อมต่อ (Offline)", text_color=("#C0392B", "#E74C3C"))
-        self.after(3000, self.check_offline_status)
+    def load_offline_pcs(self):
+        conn = sqlite3.connect('pclab_monitor.db')
+        rows = conn.execute("SELECT pc_name FROM pc_info").fetchall()
+        conn.close()
+        
+        if not rows: return
+        
+        img = Image.new('RGB', (1280, 720), color='black')
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=50)
+        blank_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        for row in rows:
+            pc_name = row[0]
+            if pc_name not in clients_ui:
+                self.update_pc_screen(pc_name, blank_base64, 0, 0, "Offline")
+                clients_ui[pc_name]['status_label'].configure(text="🔴 ขาดการเชื่อมต่อ (Offline)", text_color=("#C0392B", "#E74C3C"))
+                clients_ui[pc_name]['last_update'] = 0
 
     def update_pc_registration(self, pc_name, name, student_id):
-        if pc_name in clients_ui: clients_ui[pc_name]['status_label'].configure(text=f"👤 {name} ({student_id})", text_color=("#2980B9", "#3498DB"))
+        if pc_name in clients_ui: 
+            clients_ui[pc_name]['status_label'].configure(text=f"👤 {name} ({student_id})", text_color=("#2980B9", "#3498DB"))
+            clients_ui[pc_name]['title_label'].configure(text=f"{pc_name} - {name}")
 
     def toggle_theme(self):
         if ctk.get_appearance_mode() == "Light": ctk.set_appearance_mode("Dark"); self.theme_btn.configure(text="☀️ Light Mode")
@@ -536,7 +659,6 @@ class PCLabMonitorApp(ctk.CTk):
             while self.is_broadcasting:
                 try:
                     sct_img = sct.grab(monitor)
-                    # 🛠️ แก้จาก 1920, 1080 เป็น 1280, 720
                     img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX").resize((1280, 720))
                     buffer = io.BytesIO()
                     img.save(buffer, format="JPEG", quality=80)
@@ -544,7 +666,26 @@ class PCLabMonitorApp(ctk.CTk):
                     time.sleep(0.1) 
                 except: pass
 
+    def check_offline_status(self):
+        current_time = time.time()
+        for pc_name, data in clients_ui.items():
+            if current_time - data.get('last_update', 0) > 5:
+                data['status_label'].configure(text="🔴 ขาดการเชื่อมต่อ (Offline)", text_color=("#C0392B", "#E74C3C"))
+        self.after(3000, self.check_offline_status)
+
+    def update_student_agents(self):
+        filepath = filedialog.askopenfilename(title="เลือกไฟล์ student_agent.exe ตัวใหม่", filetypes=[("Executable Files", "*.exe")])
+        if filepath:
+            if messagebox.askyesno("ยืนยันการอัปเดต", "ต้องการส่งไฟล์นี้ไปอัปเดตและรีสตาร์ทโปรแกรมที่เครื่องนักศึกษาทั้งหมดใช่หรือไม่?\n\n(เครื่องนักศึกษาจะกระพริบ 1 ครั้งแล้วเปิดขึ้นมาใหม่ด้วยเวอร์ชันล่าสุด)"):
+                with open(filepath, "rb") as f:
+                    file_data = base64.b64encode(f.read()).decode('utf-8')
+                socketio.emit('execute_command', {'action': 'update_agent', 'file_data': file_data, 'target': 'all'})
+                self.status_lbl.configure(text="🔄 กำลังส่งไฟล์อัปเดตไปยังเครื่องนักศึกษา...")
+
     def btn_action(self, action):
+
+        log_activity(f"Broadcast Command: {action}", "All PCs")
+
         if action in ["lock", "unlock", "register"]: socketio.emit('execute_command', {'action': action, 'target': 'all'})
         elif action == "shutdown":
             if messagebox.askyesno("ยืนยัน", "ต้องการปิดเครื่องนักเรียนทั้งหมด?"): socketio.emit('execute_command', {'action': 'shutdown', 'target': 'all'})
@@ -554,15 +695,13 @@ class PCLabMonitorApp(ctk.CTk):
             conn.close()
             if not rows: return
             
-            # 🛠️ สร้าง Thread ค่อยๆ ยิงทีละเครื่อง ป้องกัน Switch บล็อกและ UI ค้าง
             def wake_all_pcs():
                 success_count = 0
                 for row in rows:
                     if send_magic_packet(row[1]):
                         success_count += 1
-                    time.sleep(0.15)  # ⏳ หน่วงเวลา 0.15 วินาทีต่อเครื่อง
+                    time.sleep(0.15) 
                 
-                # อัปเดตข้อความเมื่อส่งครบทุกเครื่อง
                 self.after(0, lambda: self.status_lbl.configure(
                     text=f"⚡ สั่งเปิดเครื่องสำเร็จ {success_count}/{len(rows)} เครื่อง"
                 ))
@@ -578,10 +717,16 @@ class PCLabMonitorApp(ctk.CTk):
         elif action == "show":
             if not self.is_broadcasting:
                 self.is_broadcasting = True
+                
+                if hasattr(self, 'exhibit_pc') and self.exhibit_pc:
+                    socketio.emit('execute_command', {'action': 'set_low_fps', 'target': self.exhibit_pc})
+                self.exhibit_pc = None 
+                
                 self.share_btn.configure(fg_color="#E74C3C", hover_color="#C0392B", text="🛑 Stop Sharing")
                 threading.Thread(target=self.broadcast_teacher_screen, daemon=True).start()
             else:
                 self.is_broadcasting = False
+                self.exhibit_pc = None 
                 self.share_btn.configure(fg_color="#3498DB", hover_color="#2980B9", text="🖥️ Share")
                 socketio.emit('execute_command', {'action': 'stop_broadcast'})
 

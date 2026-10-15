@@ -1,4 +1,5 @@
 import time
+time.sleep(15)
 import base64
 import socketio
 import io
@@ -181,49 +182,69 @@ def show_fullscreen_ui(text="", bg_color="black", text_color="white", show_image
 
     try:
         student_dashboard_frame.pack_forget()
-        root.withdraw() 
         
-        root.overrideredirect(True)
-        user32 = ctypes.windll.user32
-        screen_w = user32.GetSystemMetrics(0)
-        screen_h = user32.GetSystemMetrics(1)
-        root.geometry(f"{screen_w}x{screen_h}+0+0")
+        # 🛠️ บังคับปลุกหน้าต่างให้ตื่น ดันขึ้นมาหน้าสุด และดึงโฟกัสทันที (แก้บั๊กต้องรอคลิก)
+        root.deiconify()
+        root.lift()
+        root.focus_force()
+        
+        root.attributes('-fullscreen', True)
+        root.attributes('-topmost', True) 
         root.configure(bg=bg_color, cursor="none") 
         
         if show_image:
-            msg_label.place_forget()
+            msg_label.pack_forget()
             broadcast_label.configure(bg="black")
-            broadcast_label.place(x=0, y=0, relwidth=1, relheight=1)
+            broadcast_label.pack(expand=True, fill="both")
         else:
-            broadcast_label.place_forget()
+            broadcast_label.pack_forget()
             msg_label.config(text=text, fg=text_color, bg="black")
-            msg_label.place(relx=0.5, rely=0.5, anchor="center")
+            msg_label.pack(expand=True, fill="both")
             
-        root.deiconify()
+        # 🛠️ บังคับให้โปรแกรมวาดหน้าจอสีดำใหม่ทันทีโดยไม่ต้องรอให้ผู้ใช้ขยับเมาส์
+        root.update()
+    except: pass
+
+    try:
+        student_dashboard_frame.pack_forget()
+        
+        # 🛠️ ใช้คำสั่งบังคับเต็มจอแบบมาตรฐานที่ปลอดภัยที่สุด
         root.attributes('-fullscreen', True)
         root.attributes('-topmost', True) 
-        root.update() 
+        root.configure(bg=bg_color, cursor="none") 
+        
+        # 🛠️ สลับ UI ด้วย .pack() เพื่อให้ขยายเต็มพื้นที่อัตโนมัติ (แก้บั๊กจอขาว/จอไม่เต็ม)
+        if show_image:
+            msg_label.pack_forget()
+            broadcast_label.configure(bg="black")
+            broadcast_label.pack(expand=True, fill="both")
+        else:
+            broadcast_label.pack_forget()
+            msg_label.config(text=text, fg=text_color, bg="black")
+            msg_label.pack(expand=True, fill="both")
     except: pass
 
 def hide_fullscreen_ui():
-    global IS_LOCKED
+    global IS_LOCKED, LATEST_BROADCAST_FRAME
     IS_LOCKED = False
+    LATEST_BROADCAST_FRAME = None 
     try:
         root.grab_release() 
         root.configure(cursor="") 
         unfreeze_hardware()
+
+        broadcast_label.config(image='')
+        broadcast_label.image = None
         
-        root.withdraw()
+        # 🛠️ คืนค่าหน้าต่างกลับเป็นแบบปกติ
         root.attributes('-fullscreen', False)
         root.attributes('-topmost', False) 
-        root.overrideredirect(False)
         root.geometry("400x250")
         root.eval('tk::PlaceWindow . center')
         root.configure(bg="#F8F9F9")
-        root.deiconify()
         
-        msg_label.place_forget()
-        broadcast_label.place_forget()
+        msg_label.pack_forget()
+        broadcast_label.pack_forget()
         student_dashboard_frame.pack(expand=True, fill="both")
     except: pass
 
@@ -292,10 +313,6 @@ def show_register_dialog():
     submit_btn = tk.Button(card, text="ตกลง", font=("Segoe UI", 12, "bold"), bg="#285C8D", fg="white", activebackground="#1F476D", activeforeground="white", relief="flat", command=submit)
     submit_btn.pack(fill="x", padx=30, ipady=6, pady=(0, 10))
     
-    footer_frame = tk.Frame(card, bg="white")
-    footer_frame.pack(side="bottom", pady=20)
-    tk.Label(footer_frame, text="2FA Setting and Recovery", font=("Segoe UI", 9), bg="white", fg="#5D6D7E").pack()
-    tk.Label(footer_frame, text="Forgot password ⚪ Sign-up ⚪ Terms of use", font=("Segoe UI", 9), bg="white", fg="#5D6D7E").pack()
 
 def show_message_dialog(message):
     dialog = tk.Toplevel(root)
@@ -395,22 +412,40 @@ def on_command(data):
     elif action == 'block_app': BLOCKED_APPS = data['apps']
     elif action == 'unblock_app': BLOCKED_APPS = []
 
+LATEST_BROADCAST_FRAME = None # ตัวแปรเก็บภาพล่าสุด
+
 @sio.on('broadcast_frame')
 def on_broadcast(data):
+    global LATEST_BROADCAST_FRAME
     if IS_LOCKED:
-        def update_image():
-            img_data = base64.b64decode(data['image_data'])
+        # 🛠️ รับแค่ภาพวินาทีล่าสุดมาเก็บไว้ (ทิ้งคิวภาพเก่าทั้งหมด)
+        LATEST_BROADCAST_FRAME = data['image_data']
+
+def render_broadcast_frame():
+    global LATEST_BROADCAST_FRAME
+    if IS_LOCKED and LATEST_BROADCAST_FRAME:
+        try:
+            img_data = base64.b64decode(LATEST_BROADCAST_FRAME)
             img = Image.open(io.BytesIO(img_data))
             
             user32 = ctypes.windll.user32
             screen_w = user32.GetSystemMetrics(0)
             screen_h = user32.GetSystemMetrics(1)
-            img = img.resize((screen_w, screen_h)) 
+            
+            # 🛠️ ตอนเพื่อนรับภาพไปขยายเต็มจอ ก็ต้องใช้ LANCZOS ด้วยเพื่อให้ภาพสมูท
+            try: resample_alg = Image.Resampling.LANCZOS
+            except AttributeError: resample_alg = Image.LANCZOS
+                
+            img = img.resize((screen_w, screen_h), resample_alg) 
             
             photo = ImageTk.PhotoImage(image=img)
             broadcast_label.config(image=photo)
             broadcast_label.image = photo 
-        root.after(0, update_image)
+            
+            LATEST_BROADCAST_FRAME = None 
+        except: pass
+    
+    root.after(100, render_broadcast_frame)
 
 def capture_and_send_screen():
     global SEND_INTERVAL
@@ -419,11 +454,23 @@ def capture_and_send_screen():
         while True:
             try:
                 sct_img = sct.grab(monitor)
-                # 🛠️ แก้จาก 1920, 1080 เป็น 1280, 720 
-                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX").resize((1280, 720)) 
-                buffer = io.BytesIO()
-                img.save(buffer, format="JPEG", quality=80) 
+                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
                 
+                if SEND_INTERVAL < 0.1: 
+                    # 🛠️ โหมดแชร์จอให้เพื่อนดู (Exhibit) จะส่งภาพ 1080p ต้นฉบับไปเลย! 
+                    # ชัดกริบ 100% เหมือนที่เครื่องอาจารย์ทำได้
+                    buffer = io.BytesIO()
+                    img.save(buffer, format="JPEG", quality=85) 
+                else:
+                    # 🛠️ โหมดส่งภาพเข้า Dashboard อาจารย์ ย่อเป็น 720p 
+                    # แต่เปลี่ยนมาใช้สูตร LANCZOS ที่ถนอมเส้นตัวหนังสือ ภาพจะไม่แตกเป็นบล็อกๆ
+                    try: resample_alg = Image.Resampling.LANCZOS
+                    except AttributeError: resample_alg = Image.LANCZOS
+                    
+                    img = img.resize((1280, 720), resample_alg) 
+                    buffer = io.BytesIO()
+                    img.save(buffer, format="JPEG", quality=80) 
+                    
                 cpu_usage = psutil.cpu_percent(interval=None)
                 ram_usage = psutil.virtual_memory().percent
                 ping = "OK" if psutil.net_io_counters().bytes_sent > 0 else "Low"
@@ -463,6 +510,20 @@ if __name__ == '__main__':
     broadcast_label = tk.Label(root, bg="black", bd=0, highlightthickness=0) 
     
     root.bind("<FocusOut>", lambda e: keep_focus_loop())
+
+    # 🛠️ รันลูปดึงภาพล่าสุดเพื่อแสดงผลแชร์จอ
+    render_broadcast_frame()
     
-    threading.Thread(target=lambda: (sio.connect(TEACHER_IP), capture_and_send_screen()), daemon=True).start()
+    def connect_and_stream():
+        while True:
+            try:
+                sio.connect(TEACHER_IP)
+                capture_and_send_screen()
+                break 
+            except:
+                time.sleep(5)
+                
+    # 🛠️ Thread ที่ใช้เชื่อมต่อหาอาจารย์
+    threading.Thread(target=connect_and_stream, daemon=True).start()
+    
     root.mainloop()
